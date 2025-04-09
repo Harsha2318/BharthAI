@@ -4,7 +4,11 @@ import { toast } from 'react-toastify';
 import { useSpeech } from '../context/SpeechContext';
 import { supportedLanguages } from '../config/languages';
 import { FaPlus, FaPencilAlt, FaTrash, FaDownload, FaUser, FaMoon, FaSun } from 'react-icons/fa';
+import { useSpeech } from '../context/SpeechContext';
+import { supportedLanguages } from '../config/languages';
+import { FaPlus, FaPencilAlt, FaTrash, FaDownload, FaUser, FaMoon, FaSun } from 'react-icons/fa';
 import { auth } from '../utils/auth';
+import { chatApi } from '../utils/chatApi';
 import { exportChatToPDF } from '../utils/exportPdf';
 import ChatMessage from '../components/ChatMessage';
 import { createChat, saveMessage, loadChats, renameChat, deleteChat } from '../db';
@@ -12,6 +16,14 @@ import { createChat, saveMessage, loadChats, renameChat, deleteChat } from '../d
 const Chatbot = () => {
   const navigate = useNavigate();
   const [input, setInput] = useState("");
+  const {
+    isListening,
+    currentLanguage,
+    setCurrentLanguage,
+    startListening,
+    stopListening,
+    speakText
+  } = useSpeech();
   const {
     isListening,
     currentLanguage,
@@ -36,6 +48,7 @@ const Chatbot = () => {
   
   const chatEndRef = useRef(null);
   const inputRef = useRef(null);
+  const user = auth.getCurrentUser();
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", darkMode);
@@ -50,8 +63,18 @@ const Chatbot = () => {
   }, []);
 
   useEffect(() => {
-    const loadInitialChats = async () => {
-      const result = await loadChats();
+    setAudioAvailable(!!navigator.mediaDevices && !!navigator.mediaDevices.getUserMedia);
+  }, []);
+
+  const handleNewChat = useCallback(async () => {
+    if (!user || !user.id) {
+      toast.error('You need to log in first');
+      navigate('/login');
+      return;
+    }
+    
+    try {
+      const result = await chatApi.createChat(user.id);
       
       if (result && Object.keys(result.chatHistory).length > 0) {
         setChatHistory(result.chatHistory || {});
@@ -99,7 +122,12 @@ const Chatbot = () => {
       const autoTitle = words.slice(0, 3).join(" ") + (words.length > 3 ? "..." : "");
       const formattedTitle = autoTitle.charAt(0).toUpperCase() + autoTitle.slice(1);
       setChatTitles(prev => ({ ...prev, [currentChatId]: formattedTitle }));
-      await renameChat(currentChatId, formattedTitle);
+      
+      try {
+        await chatApi.renameChat(user.id, currentChatId, formattedTitle);
+      } catch (error) {
+        console.error('Error renaming chat:', error);
+      }
     }
 
     try {
@@ -150,6 +178,7 @@ const Chatbot = () => {
       console.error("Error:", err);
       toast.error("Failed to fetch response!");
       setChats(updatedChat);
+      setChats(updatedChat);
       setLoading(false);
     }
   };
@@ -182,6 +211,13 @@ const Chatbot = () => {
 
   const handleDeleteChat = async (id, e) => {
     e.stopPropagation();
+    
+    if (!user || !user.id) {
+      toast.error('You need to log in first');
+      navigate('/login');
+      return;
+    }
+    
     if (window.confirm("Are you sure you want to delete this chat?")) {
       await deleteChat(id);
       
@@ -210,10 +246,26 @@ const Chatbot = () => {
   };
 
   const handleTitleChange = async () => {
+    if (!user || !user.id) {
+      toast.error('You need to log in first');
+      navigate('/login');
+      return;
+    }
+    
     if (editingTitleId && newTitle.trim()) {
-      await renameChat(editingTitleId, newTitle);
-      setChatTitles(prev => ({ ...prev, [editingTitleId]: newTitle }));
-      setEditingTitleId(null);
+      try {
+        const result = await chatApi.renameChat(user.id, editingTitleId, newTitle);
+        
+        if (result.success) {
+          setChatTitles(prev => ({ ...prev, [editingTitleId]: newTitle }));
+          setEditingTitleId(null);
+        } else {
+          toast.error('Failed to rename chat');
+        }
+      } catch (error) {
+        console.error('Error renaming chat:', error);
+        toast.error('Failed to rename chat');
+      }
     }
   };
 
@@ -231,9 +283,22 @@ const Chatbot = () => {
     navigate('/login');
   };
 
+  if (initialLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-gray-100 dark:bg-gray-900">
+        <div className="text-center">
+          <div className="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-blue-600 border-r-transparent"></div>
+          <p className="mt-4 text-lg font-medium text-gray-700 dark:text-gray-300">Loading chats...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={`flex flex-col h-screen ${darkMode ? 'dark' : ''}`}>
       <div className="flex flex-1 overflow-hidden bg-gray-100 dark:bg-gray-900">
+        {/* Collapsible Sidebar */}
+        <div className={`bg-gray-200 dark:bg-gray-800 flex flex-col transition-all duration-300 ${sidebarCollapsed ? 'w-16' : 'w-64'}`}>
         {/* Collapsible Sidebar */}
         <div className={`bg-gray-200 dark:bg-gray-800 flex flex-col transition-all duration-300 ${sidebarCollapsed ? 'w-16' : 'w-64'}`}>
           {/* Sidebar Header */}
@@ -246,10 +311,22 @@ const Chatbot = () => {
                 <FaPlus className="mr-2" /> New Chat
               </button>
             )}
+          <div className="p-4 border-b border-gray-300 dark:border-gray-700 flex items-center justify-between">
+            {!sidebarCollapsed && (
+              <button
+                onClick={handleNewChat}
+                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded flex items-center justify-center flex-1 mr-2"
+              >
+                <FaPlus className="mr-2" /> New Chat
+              </button>
+            )}
             <button
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
               className="p-2 rounded hover:bg-gray-300 dark:hover:bg-gray-700"
+              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+              className="p-2 rounded hover:bg-gray-300 dark:hover:bg-gray-700"
             >
+              {sidebarCollapsed ? '→' : '←'}
               {sidebarCollapsed ? '→' : '←'}
             </button>
           </div>
@@ -323,6 +400,18 @@ const Chatbot = () => {
                 ))}
               </select>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Language
+              </label>
+              <select
+                value={currentLanguage}
+                onChange={(e) => setCurrentLanguage(e.target.value)}
+                className="w-full p-2 rounded border dark:bg-gray-700 dark:border-gray-600 dark:text-white mb-4"
+              >
+                {Object.entries(supportedLanguages).map(([code, name]) => (
+                  <option key={code} value={code}>{name}</option>
+                ))}
+              </select>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                 Model
               </label>
               <select
@@ -334,6 +423,7 @@ const Chatbot = () => {
                 <option>LLaMA2</option>
               </select>
             </div>
+
 
             
             <div className="flex flex-col space-y-2">
@@ -373,6 +463,14 @@ const Chatbot = () => {
         <div className="flex-1 flex flex-col">
           {/* Chat Header */}
           <div className="bg-white dark:bg-gray-800 p-4 shadow flex justify-between items-center">
+            <div className="flex items-center gap-4">
+              <h2 className="text-lg font-semibold dark:text-white">
+                {chatTitles[currentChatId] || 'New Chat'}
+              </h2>
+              <div className="text-sm px-2 py-1 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center gap-1">
+                {supportedLanguages[currentLanguage] || currentLanguage}
+              </div>
+            </div>
             <div className="flex items-center gap-4">
               <h2 className="text-lg font-semibold dark:text-white">
                 {chatTitles[currentChatId] || 'New Chat'}

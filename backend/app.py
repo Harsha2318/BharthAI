@@ -318,8 +318,8 @@ def login():
         })
     return jsonify({"success": False, "message": "Invalid credentials"}), 401
 
-@app.route("/api/signup", methods=["POST"])
-def signup():
+@app.route("/api/send-verification", methods=["POST"])
+def send_verification():
     data = request.get_json()
     email = data.get("email")
     password = data.get("password")
@@ -327,13 +327,94 @@ def signup():
     if email and password and '@' in email:
         return jsonify({
             "success": True,
-            "user": {
-                "id": "user123",
-                "email": email,
-                "name": email.split('@')[0]
-            }
+            "message": "Verification code sent to your email"
         })
-    return jsonify({"success": False, "message": "Invalid signup data"}), 400
+    else:
+        return jsonify({
+            "success": False,
+            "message": "Failed to send verification email"
+        }), 500
+
+@app.route("/api/chats", methods=["GET"])
+def get_chats():
+    user_id = request.args.get("userId", "")
+    
+    if not user_id:
+        return jsonify({"success": False, "message": "User ID is required"}), 400
+    
+    if user_id not in CHAT_HISTORY:
+        return jsonify({"success": True, "chats": {}})
+    
+    return jsonify({
+        "success": True,
+        "chats": CHAT_HISTORY[user_id]
+    })
+
+@app.route("/api/chats", methods=["POST"])
+def create_chat():
+    data = request.get_json()
+    user_id = data.get("userId", "")
+    chat_id = data.get("chatId", f"chat_{datetime.now().timestamp()}")
+    title = data.get("title", "New Chat")
+    
+    if not user_id:
+        return jsonify({"success": False, "message": "User ID is required"}), 400
+    
+    if user_id not in CHAT_HISTORY:
+        CHAT_HISTORY[user_id] = {}
+    
+    CHAT_HISTORY[user_id][chat_id] = {
+        "title": title,
+        "messages": []
+    }
+    
+    save_data()
+    
+    return jsonify({
+        "success": True,
+        "chatId": chat_id,
+        "chat": CHAT_HISTORY[user_id][chat_id]
+    })
+
+@app.route("/api/chats/<chat_id>", methods=["PUT"])
+def update_chat(chat_id):
+    data = request.get_json()
+    user_id = data.get("userId", "")
+    title = data.get("title", "")
+    
+    if not user_id:
+        return jsonify({"success": False, "message": "User ID is required"}), 400
+    
+    if user_id not in CHAT_HISTORY or chat_id not in CHAT_HISTORY[user_id]:
+        return jsonify({"success": False, "message": "Chat not found"}), 404
+    
+    if title:
+        CHAT_HISTORY[user_id][chat_id]["title"] = title
+    
+    save_data()
+    
+    return jsonify({
+        "success": True,
+        "chat": CHAT_HISTORY[user_id][chat_id]
+    })
+
+@app.route("/api/chats/<chat_id>", methods=["DELETE"])
+def delete_chat(chat_id):
+    user_id = request.args.get("userId", "")
+    
+    if not user_id:
+        return jsonify({"success": False, "message": "User ID is required"}), 400
+    
+    if user_id not in CHAT_HISTORY or chat_id not in CHAT_HISTORY[user_id]:
+        return jsonify({"success": False, "message": "Chat not found"}), 404
+    
+    del CHAT_HISTORY[user_id][chat_id]
+    save_data()
+    
+    return jsonify({
+        "success": True,
+        "message": "Chat deleted successfully"
+    })
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
