@@ -1,9 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
+// src/pages/Chatbot.jsx
+import React, { useState,useCallback, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'react-toastify';
-import { useSpeech } from '../context/SpeechContext';
-import { supportedLanguages } from '../config/languages';
-import { FaPlus, FaPencilAlt, FaTrash, FaDownload, FaUser, FaMoon, FaSun } from 'react-icons/fa';
 import { useSpeech } from '../context/SpeechContext';
 import { supportedLanguages } from '../config/languages';
 import { FaPlus, FaPencilAlt, FaTrash, FaDownload, FaUser, FaMoon, FaSun } from 'react-icons/fa';
@@ -11,19 +9,10 @@ import { auth } from '../utils/auth';
 import { chatApi } from '../utils/chatApi';
 import { exportChatToPDF } from '../utils/exportPdf';
 import ChatMessage from '../components/ChatMessage';
-import { createChat, saveMessage, loadChats, renameChat, deleteChat } from '../db';
 
 const Chatbot = () => {
   const navigate = useNavigate();
   const [input, setInput] = useState("");
-  const {
-    isListening,
-    currentLanguage,
-    setCurrentLanguage,
-    startListening,
-    stopListening,
-    speakText
-  } = useSpeech();
   const {
     isListening,
     currentLanguage,
@@ -45,6 +34,7 @@ const Chatbot = () => {
   const [loading, setLoading] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [audioAvailable, setAudioAvailable] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
   
   const chatEndRef = useRef(null);
   const inputRef = useRef(null);
@@ -62,10 +52,6 @@ const Chatbot = () => {
     setAudioAvailable(!!navigator.mediaDevices && !!navigator.mediaDevices.getUserMedia);
   }, []);
 
-  useEffect(() => {
-    setAudioAvailable(!!navigator.mediaDevices && !!navigator.mediaDevices.getUserMedia);
-  }, []);
-
   const handleNewChat = useCallback(async () => {
     if (!user || !user.id) {
       toast.error('You need to log in first');
@@ -76,29 +62,88 @@ const Chatbot = () => {
     try {
       const result = await chatApi.createChat(user.id);
       
-      if (result && Object.keys(result.chatHistory).length > 0) {
-        setChatHistory(result.chatHistory || {});
-        setChatTitles(result.chatTitles || {});
+      if (result.success) {
+        const newChatId = result.chatId;
+        setCurrentChatId(newChatId);
+        setChats([]);
+        setChatTitles(prev => ({
+          ...prev,
+          [newChatId]: 'New Chat',
+        }));
+        setChatHistory(prev => ({
+          ...prev,
+          [newChatId]: [],
+        }));
         
-        const firstChatId = Object.keys(result.chatHistory)[0];
-        setCurrentChatId(firstChatId);
-        // Ensure chats is always an array, even if the data is null/undefined
-        const initialChats = result.chatHistory[firstChatId];
-        setChats(Array.isArray(initialChats) ? initialChats : []);
+        setTimeout(() => {
+          inputRef.current?.focus();
+        }, 100);
       } else {
-        const defaultId = `chat-${Date.now()}`;
-        await createChat(defaultId, 'New Chat');
-        setChatTitles({ [defaultId]: 'New Chat' });
-        setChatHistory({ [defaultId]: [] });
-        setCurrentChatId(defaultId);
+        toast.error('Failed to create new chat');
+      }
+    } catch (error) {
+      console.error('Error creating new chat:', error);
+      toast.error('Failed to create new chat');
+    }
+  }, [user, navigate]);
+
+  useEffect(() => {
+    const loadChats = async () => {
+      if (!user || !user.id) {
+        setInitialLoading(false);
+        return;
+      }
+      
+      try {
+        const result = await chatApi.getChats(user.id);
+        
+        if (result.success) {
+          const userChats = result.chats || {};
+          
+          // Convert chat data structure
+          const chatHistoryMap = {};
+          const chatTitlesMap = {};
+          
+          Object.entries(userChats).forEach(([chatId, chat]) => {
+            chatHistoryMap[chatId] = chat.messages || [];
+            chatTitlesMap[chatId] = chat.title || 'New Chat';
+          });
+          
+          setChatHistory(chatHistoryMap);
+          setChatTitles(chatTitlesMap);
+          
+          // Set current chat if we have any
+          if (Object.keys(chatHistoryMap).length > 0) {
+            const firstChatId = Object.keys(chatHistoryMap)[0];
+            setCurrentChatId(firstChatId);
+            setChats(chatHistoryMap[firstChatId] || []);
+          } else {
+            await handleNewChat();
+          }
+        } else {
+          toast.error('Failed to load chats');
+          await handleNewChat();
+        }
+      } catch (error) {
+        console.error('Error loading chats:', error);
+        toast.error('Failed to load chats');
+        await handleNewChat();
+      } finally {
+        setInitialLoading(false);
       }
     };
     
-    loadInitialChats();
-  }, []);
+    loadChats();
+  }, [handleNewChat, user]);  // Add handleNewChat and user to dependency array to fix ESLint warning
 
   const handleSend = async () => {
     if (!input.trim() || loading) return;
+    
+    if (!user || !user.id) {
+      toast.error('You need to log in first');
+      navigate('/login');
+      return;
+    }
 
     // Store chat language preference
     localStorage.setItem(`chatLang_${currentChatId}`, currentLanguage);
@@ -107,17 +152,19 @@ const Chatbot = () => {
     const userMessage = { 
       role: "user", 
       content: input,
-      language: currentLanguage 
+      language: currentLanguage,
+      timestamp: new Date().toISOString()
     };
     const updatedChat = [...chats, userMessage];
     setChats(updatedChat);
     setInput("");
 
-    const placeholder = { role: "bot", content: "..." };
+    const placeholder = { role: "bot", content: "...", language: currentLanguage };
     const newChats = [...updatedChat, placeholder];
     setChats(newChats);
 
-    if (!chatTitles[currentChatId] || chatTitles[currentChatId] === 'New Chat') {
+    // Auto-title for new empty chats
+    if (chatTitles[currentChatId] === 'New Chat' && chats.length === 0) {
       const words = input.trim().split(" ");
       const autoTitle = words.slice(0, 3).join(" ") + (words.length > 3 ? "..." : "");
       const formattedTitle = autoTitle.charAt(0).toUpperCase() + autoTitle.slice(1);
@@ -131,82 +178,60 @@ const Chatbot = () => {
     }
 
     try {
-      const res = await fetch("http://localhost:5000/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ 
-                  message: input,
-                  model,
-                  language: currentLanguage
-                }),
-      });
+      const response = await chatApi.sendMessage(
+        user.id,
+        currentChatId,
+        input,
+        model,
+        currentLanguage
+      );
       
-      if (!res.ok) {
-        throw new Error(`Error: ${res.status}`);
+      if (response.reply) {
+        let i = 0;
+        const responseLength = response.reply.length;
+        const chunkSize = Math.max(1, Math.floor(responseLength / 20));
+        
+        const interval = setInterval(() => {
+          if (i <= responseLength) {
+            const streamingContent = response.reply.slice(0, i);
+            setChats(chats => 
+              chats.map((msg, idx) =>
+                idx === chats.length - 1 ? { ...msg, content: streamingContent } : msg
+              )
+            );
+            i += chunkSize;
+          } else {
+            clearInterval(interval);
+            const finalChats = updatedChat.concat({
+              role: "bot",
+              content: response.reply,
+              language: currentLanguage,
+              timestamp: new Date().toISOString()
+            });
+            setChats(finalChats);
+            
+            setChatHistory(prev => ({ ...prev, [currentChatId]: finalChats }));
+            setLoading(false);
+          }
+        }, 50);
+      } else {
+        toast.error('Failed to get response');
+        setChats(updatedChat);
+        setLoading(false);
       }
-      
-      const data = await res.json();
-      
-      if (!data || !data.reply) {
-        throw new Error('Invalid response from server');
-      }
-      
-      let i = 0;
-      const responseLength = data.reply.length;
-      const chunkSize = Math.max(1, Math.floor(responseLength / 20));
-      
-      const interval = setInterval(() => {
-        if (i <= responseLength) {
-          const streamingContent = data.reply.slice(0, i);
-          setChats(chats => 
-            chats.map((msg, idx) =>
-              idx === chats.length - 1 ? { ...msg, content: streamingContent } : msg
-            )
-          );
-          i += chunkSize;
-        } else {
-          clearInterval(interval);
-          const finalChats = updatedChat.concat({ role: "bot", content: data.reply });
-          setChats(finalChats);
-          
-          setChatHistory(prev => ({ ...prev, [currentChatId]: finalChats }));
-          saveMessage(currentChatId, finalChats);
-          setLoading(false);
-        }
-      }, 50);
     } catch (err) {
       console.error("Error:", err);
       toast.error("Failed to fetch response!");
-      setChats(updatedChat);
       setChats(updatedChat);
       setLoading(false);
     }
   };
 
-  const handleNewChat = async () => {
-    const newId = `chat-${Date.now()}`;
-    await createChat(newId, 'New Chat');
-    setCurrentChatId(newId);
-    setChats([]);
-    setChatTitles(prev => ({
-      ...prev,
-      [newId]: 'New Chat',
-    }));
-    setChatHistory(prev => ({
-      ...prev,
-      [newId]: [],
-    }));
-    
-    setTimeout(() => {
-      inputRef.current?.focus();
-    }, 100);
-  };
+
 
   const handleSelectChat = (id) => {
     setCurrentChatId(id);
-    // Ensure chats is always an array when selecting a chat
-    const selectedChat = chatHistory[id];
-    setChats(Array.isArray(selectedChat) ? selectedChat : []);
+    setChats(chatHistory[id] || []);
   };
 
   const handleDeleteChat = async (id, e) => {
@@ -219,22 +244,33 @@ const Chatbot = () => {
     }
     
     if (window.confirm("Are you sure you want to delete this chat?")) {
-      await deleteChat(id);
-      
-      const { [id]: _, ...restHistory } = chatHistory;
-      const { [id]: __, ...restTitles } = chatTitles;
-      
-      setChatHistory(restHistory);
-      setChatTitles(restTitles);
-      
-      if (currentChatId === id) {
-        if (Object.keys(restHistory).length > 0) {
-          const newChatId = Object.keys(restHistory)[0];
-          setCurrentChatId(newChatId);
-          setChats(restHistory[newChatId] || []);
+      try {
+        const result = await chatApi.deleteChat(user.id, id);
+        
+        if (result.success) {
+          const { [id]: _, ...restHistory } = chatHistory;
+          const { [id]: __, ...restTitles } = chatTitles;
+          
+          setChatHistory(restHistory);
+          setChatTitles(restTitles);
+          
+          if (currentChatId === id) {
+            if (Object.keys(restHistory).length > 0) {
+              const newChatId = Object.keys(restHistory)[0];
+              setCurrentChatId(newChatId);
+              setChats(restHistory[newChatId] || []);
+            } else {
+              await handleNewChat();
+            }
+          }
+          
+          toast.success('Chat deleted successfully');
         } else {
-          handleNewChat();
+          toast.error('Failed to delete chat');
         }
+      } catch (error) {
+        console.error('Error deleting chat:', error);
+        toast.error('Failed to delete chat');
       }
     }
   };
@@ -299,18 +335,7 @@ const Chatbot = () => {
       <div className="flex flex-1 overflow-hidden bg-gray-100 dark:bg-gray-900">
         {/* Collapsible Sidebar */}
         <div className={`bg-gray-200 dark:bg-gray-800 flex flex-col transition-all duration-300 ${sidebarCollapsed ? 'w-16' : 'w-64'}`}>
-        {/* Collapsible Sidebar */}
-        <div className={`bg-gray-200 dark:bg-gray-800 flex flex-col transition-all duration-300 ${sidebarCollapsed ? 'w-16' : 'w-64'}`}>
           {/* Sidebar Header */}
-          <div className="p-4 border-b border-gray-300 dark:border-gray-700 flex items-center justify-between">
-            {!sidebarCollapsed && (
-              <button
-                onClick={handleNewChat}
-                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded flex items-center justify-center flex-1 mr-2"
-              >
-                <FaPlus className="mr-2" /> New Chat
-              </button>
-            )}
           <div className="p-4 border-b border-gray-300 dark:border-gray-700 flex items-center justify-between">
             {!sidebarCollapsed && (
               <button
@@ -323,15 +348,27 @@ const Chatbot = () => {
             <button
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
               className="p-2 rounded hover:bg-gray-300 dark:hover:bg-gray-700"
-              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-              className="p-2 rounded hover:bg-gray-300 dark:hover:bg-gray-700"
             >
-              {sidebarCollapsed ? '→' : '←'}
               {sidebarCollapsed ? '→' : '←'}
             </button>
           </div>
           
-          {/* Chat List with Timestamps */}
+          {/* User Info */}
+          {!sidebarCollapsed && (
+            <div className="p-4 border-b border-gray-300 dark:border-gray-700">
+              <div className="flex items-center space-x-2">
+                <div className="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white">
+                  {user?.name ? user.name.charAt(0).toUpperCase() : 'U'}
+                </div>
+                <div className="truncate">
+                  <p className="font-medium text-gray-800 dark:text-white truncate">{user?.name || 'User'}</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{user?.email || ''}</p>
+                </div>
+              </div>
+            </div>
+          )}
+          
+          {/* Chat List */}
           <div className="flex-1 overflow-y-auto p-2">
             {Object.keys(chatHistory).length === 0 ? (
               <div className="text-center text-gray-500 dark:text-gray-400 mt-4">
@@ -400,18 +437,6 @@ const Chatbot = () => {
                 ))}
               </select>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                Language
-              </label>
-              <select
-                value={currentLanguage}
-                onChange={(e) => setCurrentLanguage(e.target.value)}
-                className="w-full p-2 rounded border dark:bg-gray-700 dark:border-gray-600 dark:text-white mb-4"
-              >
-                {Object.entries(supportedLanguages).map(([code, name]) => (
-                  <option key={code} value={code}>{name}</option>
-                ))}
-              </select>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                 Model
               </label>
               <select
@@ -423,7 +448,6 @@ const Chatbot = () => {
                 <option>LLaMA2</option>
               </select>
             </div>
-
 
             
             <div className="flex flex-col space-y-2">
@@ -471,14 +495,6 @@ const Chatbot = () => {
                 {supportedLanguages[currentLanguage] || currentLanguage}
               </div>
             </div>
-            <div className="flex items-center gap-4">
-              <h2 className="text-lg font-semibold dark:text-white">
-                {chatTitles[currentChatId] || 'New Chat'}
-              </h2>
-              <div className="text-sm px-2 py-1 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center gap-1">
-                {supportedLanguages[currentLanguage] || currentLanguage}
-              </div>
-            </div>
             
             <button
               onClick={handleExportChat}
@@ -516,14 +532,14 @@ const Chatbot = () => {
                       stopListening();
                     } else {
                       try {
-          const result = await startListening(currentLanguage);
-          if (result) {
-            setInput(result.text);
-            // Update language if different from current
-            if (result.language && result.language !== currentLanguage) {
-              setCurrentLanguage(result.language);
-            }
-          }
+                        const result = await startListening(currentLanguage);
+                        if (result) {
+                          setInput(result.text);
+                          // Update language if different from current
+                          if (result.language && result.language !== currentLanguage) {
+                            setCurrentLanguage(result.language);
+                          }
+                        }
                       } catch (error) {
                         alert(error.message);
                       }
