@@ -1,4 +1,6 @@
 import os
+import json
+from datetime import datetime
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -15,6 +17,29 @@ load_dotenv()
 # Initialize Flask app
 app = Flask(__name__, static_folder='../frontend/build', static_url_path='')
 CORS(app)
+
+# Chat history storage
+CHAT_HISTORY = {}
+
+def load_data():
+    """Load chat history from file"""
+    global CHAT_HISTORY
+    try:
+        with open('backend/data/chat_history.json', 'r') as f:
+            CHAT_HISTORY = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        CHAT_HISTORY = {}
+
+def save_data():
+    """Save chat history to file"""
+    try:
+        with open('backend/data/chat_history.json', 'w') as f:
+            json.dump(CHAT_HISTORY, f)
+    except Exception as e:
+        print(f"Error saving chat history: {str(e)}")
+
+# Load existing data on startup
+load_data()
 
 # Initialize Groq client
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))

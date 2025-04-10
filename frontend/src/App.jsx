@@ -16,9 +16,6 @@ import Profile from './pages/Profile';
 // Context
 import { SpeechProvider } from './context/SpeechContext';
 
-// Context
-import { SpeechProvider } from './context/SpeechContext';
-
 function App() {
   return (
     <SpeechProvider>
